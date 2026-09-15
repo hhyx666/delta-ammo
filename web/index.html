@@ -83,11 +83,23 @@
   <!-- ================= 右：模拟盘 ================= -->
   <div class="card right">
     <h2>模拟盘（虚拟资金练手，不影响游戏）</h2>
+    <div class="toolbar">
+      <span>账户：</span>
+      <select id="accountSel" onchange="switchAccount(Number(this.value))"></select>
+      <button onclick="addAccount()">＋新建账户</button>
+      <button onclick="deleteAccount()">删除当前账户</button>
+    </div>
     <div class="money">
       <div><div class="label">可用资金（哈夫币）</div><div class="num" id="balance">-</div></div>
       <div><div class="label">总资产</div><div class="num" id="equity">-</div></div>
       <div><div class="label">总盈亏</div><div class="num" id="pnl">-</div></div>
     </div>
+
+    <h2>账户总览 <small style="font-size:11px;color:#6d7480;font-weight:normal">红=亏 绿=赚</small></h2>
+    <table>
+      <thead><tr><th>账户</th><th>总资产</th><th>盈亏</th><th>盈亏率</th></tr></thead>
+      <tbody id="overviewBody"><tr><td colspan="4" style="text-align:center;color:#6d7480">-</td></tr></tbody>
+    </table>
 
     <div class="toolbar">
       <span>手续费率：</span>
@@ -127,7 +139,7 @@
 /* =========================================================
    全局状态
 ========================================================= */
-const SIM_KEY = 'simState_v1';
+const SIM_KEY = 'simState_v2';   // 多账户版
 const START_BALANCE = 1000000;   // 初始虚拟资金 100万
 
 let allData = null;          // data.json 的内容
@@ -273,20 +285,73 @@ function renderChart() {
 /* =========================================================
    模拟盘
 ========================================================= */
+function getActive() {
+  return sim.accounts.find(a => a.id === sim.active) || sim.accounts[0];
+}
+
 function loadSim() {
   try {
     const raw = localStorage.getItem(SIM_KEY);
     if (raw) {
       const s = JSON.parse(raw);
-      if (typeof s.balance === 'number') return s;
+      if (Array.isArray(s.accounts) && s.accounts.length && s.active) return s;
     }
   } catch (e) { /* 数据坏了就重新开始 */ }
-  return { balance: START_BALANCE, feeRate: 10, holdings: {}, records: [], equity: [] };
+  // 旧版单账户数据自动迁移成多账户里的"账户1"
+  const legacy = localStorage.getItem('simState_v1');
+  if (legacy) {
+    try {
+      const old = JSON.parse(legacy);
+      if (typeof old.balance === 'number') {
+        return {
+          feeRate: old.feeRate || 10, nextId: 2, active: 1,
+          accounts: [{
+            id: 1, name: '账户1', initial: START_BALANCE,
+            balance: old.balance, holdings: old.holdings || {},
+            records: old.records || [], equity: old.equity || [],
+          }],
+        };
+      }
+    } catch (e) { }
+  }
+  return {
+    feeRate: 10, nextId: 2, active: 1,
+    accounts: [{ id: 1, name: '账户1', initial: START_BALANCE, balance: START_BALANCE, holdings: {}, records: [], equity: [] }],
+  };
 }
 
 function saveSim() { localStorage.setItem(SIM_KEY, JSON.stringify(sim)); }
 
+function switchAccount(id) {
+  sim.active = id;
+  saveSim();
+  renderSim();
+}
+
+function addAccount() {
+  const name = prompt('给新账户起个名字（比如：小号A）', '账户' + sim.nextId);
+  if (!name) return;
+  const capStr = prompt('这个账户的初始虚拟资金（哈夫币，可以随便定，默认100万）', String(START_BALANCE));
+  const cap = parseInt(capStr, 10);
+  if (!cap || cap <= 0) return alert('初始资金要填正整数');
+  sim.accounts.push({ id: sim.nextId++, name: name, initial: cap, balance: cap, holdings: {}, records: [], equity: [] });
+  sim.active = sim.accounts[sim.accounts.length - 1].id;
+  saveSim();
+  renderSim();
+}
+
+function deleteAccount() {
+  if (sim.accounts.length <= 1) return alert('至少保留一个账户');
+  const acct = getActive();
+  if (!confirm('确定删除账户「' + acct.name + '」？它的持仓和记录都会清掉。')) return;
+  sim.accounts = sim.accounts.filter(a => a.id !== acct.id);
+  sim.active = sim.accounts[0].id;
+  saveSim();
+  renderSim();
+}
+
 function doTrade(side) {
+  const acct = getActive();   // 交易记到当前选中的账户
   const id = document.getElementById('tradeSel').value;
   const qty = parseInt(document.getElementById('qty').value, 10);
   const p = latestPrice(id);
@@ -294,16 +359,16 @@ function doTrade(side) {
   if (!qty || qty <= 0) return alert('数量要填正整数');
   sim.feeRate = Number(document.getElementById('feeRate').value) || 0;
   const rate = sim.feeRate / 100;
-  const h = sim.holdings[id] || (sim.holdings[id] = { qty: 0, cost: 0 });
+  const h = acct.holdings[id] || (acct.holdings[id] = { qty: 0, cost: 0 });
 
   if (side === 'buy') {
     const fee = Math.round(qty * p * rate);
     const total = qty * p + fee;
-    if (total > sim.balance) return alert('资金不足：需要 ' + total + '，可用 ' + sim.balance);
-    sim.balance -= total;
+    if (total > acct.balance) return alert('「' + acct.name + '」资金不足：需要 ' + total + '，可用 ' + acct.balance);
+    acct.balance -= total;
     h.qty += qty;
     h.cost += total;   // 成本按"实际花的钱"记账，自动含手续费
-    pushRecord('买入', id, qty, p, fee);
+    pushRecord(acct, '买入', id, qty, p, fee);
   } else {
     if (!h.qty || qty > h.qty) return alert('持仓不足：只有 ' + h.qty + ' 发');
     const fee = Math.round(qty * p * rate);
@@ -312,35 +377,35 @@ function doTrade(side) {
     h.cost = Math.max(0, Math.round(h.cost - avgCost * qty));  // 四舍五入，避免小数误差累积
     h.qty -= qty;
     if (h.qty === 0) h.cost = 0;
-    sim.balance += revenue;
-    pushRecord('卖出', id, qty, p, fee);
+    acct.balance += revenue;
+    pushRecord(acct, '卖出', id, qty, p, fee);
   }
-  snapshotEquity();
+  snapshotEquity(acct);
   saveSim();
   renderSim();
 }
 
-function pushRecord(side, id, qty, price, fee) {
-  sim.records.unshift({
+function pushRecord(acct, side, id, qty, price, fee) {
+  acct.records.unshift({
     t: new Date().toLocaleString('zh-CN'),
     side, name: allData.bullets[String(id)].name,
     qty, price, fee,
   });
-  if (sim.records.length > 200) sim.records.pop();
+  if (acct.records.length > 200) acct.records.pop();
 }
 
-function snapshotEquity() {
+function snapshotEquity(acct) {
   // 记录一次"总资产"用于画资产曲线；同分钟内不重复记
   const now = Date.now();
-  const last = sim.equity[sim.equity.length - 1];
+  const last = acct.equity[acct.equity.length - 1];
   if (last && now - last[0] < 60000) return;
-  sim.equity.push([now, calcEquity()]);
-  if (sim.equity.length > 500) sim.equity.shift();
+  acct.equity.push([now, calcEquity(acct)]);
+  if (acct.equity.length > 500) acct.equity.shift();
 }
 
-function calcEquity() {
-  let total = sim.balance;
-  for (const [id, h] of Object.entries(sim.holdings)) {
+function calcEquity(acct) {
+  let total = acct.balance;
+  for (const [id, h] of Object.entries(acct.holdings)) {
     if (!h.qty) continue;
     const p = latestPrice(id);
     if (p) total += h.qty * p;
@@ -349,13 +414,51 @@ function calcEquity() {
 }
 
 function renderSim() {
+  const acct = getActive();
   document.getElementById('feeRate').value = sim.feeRate;
-  document.getElementById('balance').textContent = sim.balance.toLocaleString();
-  document.getElementById('equity').textContent = calcEquity().toLocaleString();
-  const pnl = calcEquity() - START_BALANCE;
+
+  // 账户选择器
+  const sel = document.getElementById('accountSel');
+  sel.innerHTML = '';
+  for (const a of sim.accounts) {
+    sel.insertAdjacentHTML('beforeend', '<option value="' + a.id + '">' + a.name + '</option>');
+  }
+  sel.value = String(acct.id);
+
+  // 当前账户的三个数字
+  const eq = calcEquity(acct);
+  document.getElementById('balance').textContent = acct.balance.toLocaleString();
+  document.getElementById('equity').textContent = eq.toLocaleString();
+  const pnl = eq - acct.initial;
   const pnlEl = document.getElementById('pnl');
   pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toLocaleString();
   pnlEl.className = 'num ' + (pnl >= 0 ? 'pos' : 'neg');
+
+  // 账户总览表：一眼看谁赚谁亏
+  const ob = document.getElementById('overviewBody');
+  ob.innerHTML = '';
+  let sumInit = 0, sumEq = 0;
+  for (const a of sim.accounts) {
+    const e = calcEquity(a);
+    const p = e - a.initial;
+    const pct = a.initial ? (p / a.initial * 100).toFixed(1) : '0.0';
+    sumInit += a.initial; sumEq += e;
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + a.name + (a.id === sim.active ? '（当前）' : '') + '</td>' +
+      '<td>' + e.toLocaleString() + '</td>' +
+      '<td class="' + (p >= 0 ? 'pos' : 'neg') + '">' + (p >= 0 ? '+' : '') + p.toLocaleString() + '</td>' +
+      '<td class="' + (p >= 0 ? 'pos' : 'neg') + '">' + (p >= 0 ? '+' : '') + pct + '%</td>';
+    ob.appendChild(tr);
+  }
+  const totalPnl = sumEq - sumInit;
+  const trSum = document.createElement('tr');
+  trSum.innerHTML =
+    '<td><b>合计</b></td>' +
+    '<td>' + sumEq.toLocaleString() + '</td>' +
+    '<td class="' + (totalPnl >= 0 ? 'pos' : 'neg') + '"><b>' + (totalPnl >= 0 ? '+' : '') + totalPnl.toLocaleString() + '</b></td>' +
+    '<td class="' + (totalPnl >= 0 ? 'pos' : 'neg') + '">' + (sumInit ? (totalPnl / sumInit * 100).toFixed(1) : '0.0') + '%</td>';
+  ob.appendChild(trSum);
 
   // 现价显示 + 今日高低/涨跌
   const tid = document.getElementById('tradeSel').value;
@@ -368,10 +471,10 @@ function renderSim() {
   gainEl.textContent = tb.day != null ? (tb.day > 0 ? '+' : '') + tb.day + '%' : '-';
   gainEl.className = tb.day >= 0 ? 'pos' : 'neg';
 
-  // 持仓表
+  // 持仓表（当前账户）
   const body = document.getElementById('holdingsBody');
   body.innerHTML = '';
-  const rows = Object.entries(sim.holdings).filter(([, h]) => h.qty > 0);
+  const rows = Object.entries(acct.holdings).filter(([, h]) => h.qty > 0);
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6d7480">暂无持仓</td></tr>';
   }
@@ -389,31 +492,37 @@ function renderSim() {
     body.appendChild(tr);
   }
 
-  // 交易记录
+  // 交易记录（当前账户）
   const rec = document.getElementById('records');
-  rec.innerHTML = sim.records.length
-    ? sim.records.map(r => '<span class="' + (r.side === '买入' ? 'pos' : 'neg') + '">' +
+  rec.innerHTML = acct.records.length
+    ? acct.records.map(r => '<span class="' + (r.side === '买入' ? 'pos' : 'neg') + '">' +
         r.t + ' ' + r.side + ' ' + r.name + ' ×' + r.qty.toLocaleString() +
         ' @' + r.price.toLocaleString() + '（手续费 ' + r.fee.toLocaleString() + '）</span>').join('<br>')
     : '暂无交易';
 
-  // 资产曲线
+  // 资产曲线（当前账户）
   if (!equityChart) equityChart = echarts.init(document.getElementById('equityChart'));
-  if (sim.equity.length) {
+  if (acct.equity.length) {
     equityChart.setOption({
       animation: false,
       grid: { left: 60, right: 12, top: 10, bottom: 20 },
       xAxis: { type: 'time', axisLabel: { color: '#8a90a0', fontSize: 10 } },
       yAxis: { scale: true, axisLabel: { color: '#8a90a0', fontSize: 10 }, splitLine: { lineStyle: { color: '#262a35' } } },
       tooltip: { trigger: 'axis' },
-      series: [{ type: 'line', data: sim.equity, showSymbol: false, lineStyle: { color: '#4fd18a', width: 1.5 }, areaStyle: { color: 'rgba(79,209,138,0.08)' } }],
+      series: [{ type: 'line', data: acct.equity, showSymbol: false, lineStyle: { color: '#4fd18a', width: 1.5 }, areaStyle: { color: 'rgba(79,209,138,0.08)' } }],
     }, true);
+  } else {
+    equityChart.clear();
   }
 }
 
 function resetSim() {
-  if (!confirm('确定清空模拟盘重新开始？（初始资金 100万）')) return;
-  sim = { balance: START_BALANCE, feeRate: Number(document.getElementById('feeRate').value) || 10, holdings: {}, records: [], equity: [] };
+  const acct = getActive();
+  if (!confirm('确定重置账户「' + acct.name + '」？资金回到初始的 ' + acct.initial.toLocaleString() + '，持仓和记录清空。')) return;
+  acct.balance = acct.initial;
+  acct.holdings = {};
+  acct.records = [];
+  acct.equity = [];
   saveSim();
   renderSim();
 }
@@ -429,7 +538,7 @@ document.getElementById('feeRate').onchange = () => { sim.feeRate = Number(docum
 
 window.onresize = () => { if (chart) chart.resize(); if (equityChart) equityChart.resize(); };
 loadData();
-setInterval(() => { loadData(); snapshotEquity(); saveSim(); }, 300000);
+setInterval(() => { loadData(); snapshotEquity(getActive()); saveSim(); }, 300000);
 </script>
 </body>
 </html>
