@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三角洲子弹行情 · 价格走势 + 模拟盘</title>
+<script src="echarts.min.js"></script>
+<style>
+  /* ===== 整体布局 ===== */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", sans-serif;
+    background: #14161c; color: #d8dce6; padding: 12px;
+  }
+  .wrap { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card {
+    background: #1c1f28; border: 1px solid #2a2e3a;
+    border-radius: 8px; padding: 12px;
+  }
+  .left  { flex: 2 1 600px; }
+  .right { flex: 1 1 360px; }
+
+  h1 { font-size: 18px; margin-bottom: 8px; }
+  h1 small { font-size: 12px; color: #8a90a0; font-weight: normal; margin-left: 8px; }
+  h2 { font-size: 14px; margin: 10px 0 6px; color: #aeb4c2; }
+
+  /* ===== 工具栏 ===== */
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  select, input, button {
+    background: #262a35; color: #d8dce6; border: 1px solid #343947;
+    border-radius: 4px; padding: 5px 8px; font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: #303646; }
+  button.buy  { background: #1e4d3a; border-color: #2d6b52; }
+  button.sell { background: #4d2a2a; border-color: #6b3d3d; }
+  button.buy:hover  { background: #28604a; }
+  button.sell:hover { background: #603838; }
+
+  /* ===== 图表 ===== */
+  #chart { width: 100%; height: 480px; }
+
+  /* ===== 模拟盘 ===== */
+  .money { display: flex; gap: 16px; margin-bottom: 6px; }
+  .money div { flex: 1; background: #171a22; border-radius: 6px; padding: 8px 10px; }
+  .money .label { font-size: 11px; color: #8a90a0; }
+  .money .num { font-size: 17px; font-weight: bold; margin-top: 2px; }
+  .pos { color: #4fd18a; } .neg { color: #f26d6d; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border-bottom: 1px solid #2a2e3a; padding: 4px 6px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: #8a90a0; font-weight: normal; }
+
+  .records { max-height: 150px; overflow-y: auto; font-size: 11px; line-height: 1.7; }
+  #equityChart { width: 100%; height: 160px; margin-top: 8px; }
+  .tip { font-size: 11px; color: #6d7480; margin-top: 6px; }
+</style>
+</head>
+<body>
+<h1>三角洲子弹行情
+  <small id="updateInfo">数据加载中…</small>
+</h1>
+<div id="sizeWarn" style="display:none;background:#3a3320;border:1px solid #6b5d2d;color:#e8c35a;border-radius:6px;padding:6px 10px;margin-bottom:8px;font-size:12px">
+  ⚠️ 数据文件已超过约 30 MB（历史数据都完好，可正常使用）。如果担心占用磁盘空间，可以找 Claude 帮你归档整理旧数据。
+</div>
+
+<div class="wrap">
+  <!-- ================= 左：K线 ================= -->
+  <div class="card left">
+    <div class="toolbar">
+      <span>子弹：</span>
+      <select id="bulletSel"></select>
+      <span>时间范围：</span>
+      <button data-range="86400000">24小时</button>
+      <button data-range="604800000">7天</button>
+      <button data-range="0">全部</button>
+    </div>
+    <div id="chart"></div>
+    <div class="tip">蓝色线 = 价格走势（每10分钟一个点）。线往上走 = 涨价，往下走 = 跌价。黄色/蓝色虚线是均价参考线（MA5 ≈ 近50分钟均价，MA20 ≈ 近3小时均价）。</div>
+  </div>
+
+  <!-- ================= 右：模拟盘 ================= -->
+  <div class="card right">
+    <h2>模拟盘（虚拟资金练手，不影响游戏）</h2>
+    <div class="toolbar">
+      <span>账户：</span>
+      <select id="accountSel" onchange="switchAccount(Number(this.value))"></select>
+      <button onclick="addAccount()">＋新建账户</button>
+      <button onclick="deleteAccount()">删除当前账户</button>
+    </div>
+    <div class="money">
+      <div><div class="label">可用资金（哈夫币）</div><div class="num" id="balance">-</div></div>
+      <div><div class="label">总资产</div><div class="num" id="equity">-</div></div>
+      <div><div class="label">总盈亏</div><div class="num" id="pnl">-</div></div>
+    </div>
+
+    <h2>账户总览 <small style="font-size:11px;color:#6d7480;font-weight:normal">红=亏 绿=赚</small></h2>
+    <table>
+      <thead><tr><th>账户</th><th>总资产</th><th>盈亏</th><th>盈亏率</th></tr></thead>
+      <tbody id="overviewBody"><tr><td colspan="4" style="text-align:center;color:#6d7480">-</td></tr></tbody>
+    </table>
+
+    <div class="toolbar">
+      <span>手续费率：</span>
+      <input id="feeRate" type="number" min="0" max="100" step="0.1" style="width:64px" title="按游戏实际费率填写"> %
+      <span style="font-size:11px;color:#6d7480">进游戏交易行确认实际费率后填这里</span>
+    </div>
+
+    <div class="toolbar">
+      <select id="tradeSel" style="flex:1"></select>
+      <span>现价</span><b id="tradePrice">-</b>
+      <input id="qty" type="number" value="100" min="1" style="width:72px">
+      <button class="buy"  onclick="doTrade('buy')">买入</button>
+      <button class="sell" onclick="doTrade('sell')">卖出</button>
+    </div>
+    <div class="toolbar" style="font-size:12px;color:#8a90a0">
+      <span>今日最高</span><b id="dayHigh">-</b>
+      <span>今日最低</span><b id="dayLow">-</b>
+      <span>今日涨跌</span><b id="dayGain">-</b>
+      <span style="font-size:11px;color:#6d7480">（来自网站数据，供手动买卖参考）</span>
+    </div>
+
+    <h2>持仓</h2>
+    <table>
+      <thead><tr><th>子弹</th><th>数量</th><th>成本均价</th><th>现价</th><th>盈亏</th></tr></thead>
+      <tbody id="holdingsBody"><tr><td colspan="5" style="text-align:center;color:#6d7480">暂无持仓</td></tr></tbody>
+    </table>
+
+    <h2>交易记录 <button onclick="resetSim()" style="float:right;font-size:11px">重置模拟盘</button></h2>
+    <div class="records" id="records">暂无交易</div>
+
+    <div id="equityChart"></div>
+    <div class="tip">总资产 = 可用资金 + 持仓按现价折算。模拟盘数据存在浏览器里，换浏览器会丢；真实交易请在游戏里手动操作。</div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   全局状态
+========================================================= */
+const SIM_KEY = 'simState_v2';   // 多账户版
+const START_BALANCE = 1000000;   // 初始虚拟资金 100万
+
+let allData = null;          // data.json 的内容
+let chart = null;            // K线图表实例
+let equityChart = null;      // 资产曲线实例
+let rangeMs = 86400000;      // 默认看最近24小时
+let sim = loadSim();         // 模拟盘状态
+
+/* =========================================================
+   数据加载
+========================================================= */
+async function loadData() {
+  try {
+    const resp = await fetch('data.json?' + Date.now()); // 加时间戳避免浏览器缓存
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const text = await resp.text();
+    allData = JSON.parse(text);
+    const t = new Date(allData.updated);
+    // 统计：数据大小（按字符数估算）+ 历史记录总条数
+    const kb = Math.round(text.length / 1024);
+    const sizeStr = kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' KB';
+    const records = Object.values(allData.bullets).reduce((s, b) => s + b.history.length, 0);
+    document.getElementById('updateInfo').textContent =
+      '数据更新于 ' + t.toLocaleString('zh-CN') + ' · 数据量 ≈ ' + sizeStr +
+      ' · 历史记录 ' + records.toLocaleString() + ' 条（每5分钟自动刷新）';
+    document.getElementById('sizeWarn').style.display = text.length > 30000000 ? 'block' : 'none';
+    fillSelectors();
+    renderAll();
+  } catch (e) {
+    document.getElementById('updateInfo').textContent =
+      '读不到数据（' + e.message + '）。请先用"启动采集.bat"抓数据，再用"启动网页.bat"打开本页。';
+  }
+}
+
+function latestPrice(id) {
+  const b = allData.bullets[String(id)];
+  if (!b || !b.history.length) return null;
+  return b.history[b.history.length - 1][1];
+}
+
+function fillSelectors() {
+  const items = Object.entries(allData.bullets)
+    .sort((a, b) => a[1].name.localeCompare(b[1].name, 'zh'));
+  const sel = document.getElementById('bulletSel');
+  const tsel = document.getElementById('tradeSel');
+  const old = sel.value;
+  sel.innerHTML = ''; tsel.innerHTML = '';
+  for (const [id, info] of items) {
+    const opt = '<option value="' + id + '">' + info.name + '</option>';
+    sel.insertAdjacentHTML('beforeend', opt);
+    tsel.insertAdjacentHTML('beforeend', opt);
+  }
+  if (old && [...sel.options].some(o => o.value === old)) sel.value = old;
+  sel.onchange = () => renderAll();
+}
+
+function ma(closes, n) {
+  // 收盘价移动平均线（MA5 / MA20），不够 n 根时返回 null
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < closes.length; i++) {
+    sum += closes[i];
+    if (i >= n) sum -= closes[i - n];
+    out.push(i >= n - 1 ? Math.round(sum / n) : null);
+  }
+  return out;
+}
+
+/* =========================================================
+   渲染
+========================================================= */
+function renderAll() {
+  renderChart();
+  renderSim();
+}
+
+function renderChart() {
+  const id = document.getElementById('bulletSel').value;
+  const b = allData.bullets[id];
+  if (!chart) chart = echarts.init(document.getElementById('chart'));
+
+  if (!b || !b.history.length) {
+    chart.setOption({ title: { text: '该子弹还没有数据，等采集器多跑几轮', left: 'center', top: 'middle', textStyle: { color: '#6d7480', fontSize: 13 } } }, true);
+    return;
+  }
+
+  // 折线数据：所选时间范围内的所有采样点 [时间, 价格]
+  const points = b.history
+    .filter(h => !rangeMs || h[0] >= Date.now() - rangeMs)
+    .map(h => [h[0], h[1]]);
+  const prices = points.map(p => p[1]);
+  const ma5 = ma(prices, 5);    // 每5个点（约50分钟）的均价
+  const ma20 = ma(prices, 20);  // 每20个点（约3.3小时）的均价
+  const zoomStart = points.length > 60 ? 60 : 0;   // 点多时默认看最近40%
+  const cur = prices[prices.length - 1];
+
+  chart.setOption({
+    animation: false,
+    title: {
+      text: b.name + '（' + b.grade + '级）',
+      subtext: '当前价 ' + cur.toLocaleString() + ' 哈夫币 · 每10分钟一个点',
+      left: 8, top: 4, textStyle: { color: '#d8dce6', fontSize: 14 },
+      subtextStyle: { color: '#8a90a0', fontSize: 11 },
+    },
+    tooltip: {
+      trigger: 'axis',
+      formatter: function (params) {
+        const hit = params.find(p => p.seriesName === '价格' && p.data && p.data[1] != null);
+        if (!hit) return '';
+        const t = new Date(hit.data[0]).toLocaleString('zh-CN');
+        return t + '<br>价格：<b>' + hit.data[1].toLocaleString() + '</b> 哈夫币';
+      },
+    },
+    legend: { data: ['价格', 'MA5', 'MA20'], top: 4, right: 10, textStyle: { color: '#8a90a0' } },
+    grid: { left: 60, right: 16, top: 36, bottom: 60 },
+    xAxis: {
+      type: 'time',
+      axisLine: { lineStyle: { color: '#343947' } },
+      axisLabel: { color: '#8a90a0' },
+    },
+    yAxis: {
+      scale: true,
+      splitLine: { lineStyle: { color: '#262a35' } },
+      axisLabel: { color: '#8a90a0' },
+    },
+    dataZoom: [
+      { type: 'inside', start: zoomStart, end: 100 },
+      { type: 'slider', start: zoomStart, end: 100, height: 20, bottom: 16 },
+    ],
+    series: [
+      {
+        name: '价格', type: 'line', data: points,
+        showSymbol: false,
+        lineStyle: { width: 1.8, color: '#4fc3f7' },
+        areaStyle: { color: 'rgba(79,195,247,0.06)' },
+      },
+      { name: 'MA5', type: 'line', data: points.map((p, i) => [p[0], ma5[i]]), showSymbol: false, lineStyle: { width: 1, color: '#e8c35a' } },
+      { name: 'MA20', type: 'line', data: points.map((p, i) => [p[0], ma20[i]]), showSymbol: false, lineStyle: { width: 1, color: '#6fa8ff' } },
+    ],
+  }, true);
+}
+
+/* =========================================================
+   模拟盘
+========================================================= */
+function getActive() {
+  return sim.accounts.find(a => a.id === sim.active) || sim.accounts[0];
+}
+
+function loadSim() {
+  try {
+    const raw = localStorage.getItem(SIM_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (Array.isArray(s.accounts) && s.accounts.length && s.active) return s;
+    }
+  } catch (e) { /* 数据坏了就重新开始 */ }
+  // 旧版单账户数据自动迁移成多账户里的"账户1"
+  const legacy = localStorage.getItem('simState_v1');
+  if (legacy) {
+    try {
+      const old = JSON.parse(legacy);
+      if (typeof old.balance === 'number') {
+        return {
+          feeRate: old.feeRate || 10, nextId: 2, active: 1,
+          accounts: [{
+            id: 1, name: '账户1', initial: START_BALANCE,
+            balance: old.balance, holdings: old.holdings || {},
+            records: old.records || [], equity: old.equity || [],
+          }],
+        };
+      }
+    } catch (e) { }
+  }
+  return {
+    feeRate: 10, nextId: 2, active: 1,
+    accounts: [{ id: 1, name: '账户1', initial: START_BALANCE, balance: START_BALANCE, holdings: {}, records: [], equity: [] }],
+  };
+}
+
+function saveSim() { localStorage.setItem(SIM_KEY, JSON.stringify(sim)); }
+
+function switchAccount(id) {
+  sim.active = id;
+  saveSim();
+  renderSim();
+}
+
+function addAccount() {
+  const name = prompt('给新账户起个名字（比如：小号A）', '账户' + sim.nextId);
+  if (!name) return;
+  const capStr = prompt('这个账户的初始虚拟资金（哈夫币，可以随便定，默认100万）', String(START_BALANCE));
+  const cap = parseInt(capStr, 10);
+  if (!cap || cap <= 0) return alert('初始资金要填正整数');
+  sim.accounts.push({ id: sim.nextId++, name: name, initial: cap, balance: cap, holdings: {}, records: [], equity: [] });
+  sim.active = sim.accounts[sim.accounts.length - 1].id;
+  saveSim();
+  renderSim();
+}
+
+function deleteAccount() {
+  if (sim.accounts.length <= 1) return alert('至少保留一个账户');
+  const acct = getActive();
+  if (!confirm('确定删除账户「' + acct.name + '」？它的持仓和记录都会清掉。')) return;
+  sim.accounts = sim.accounts.filter(a => a.id !== acct.id);
+  sim.active = sim.accounts[0].id;
+  saveSim();
+  renderSim();
+}
+
+function doTrade(side) {
+  const acct = getActive();   // 交易记到当前选中的账户
+  const id = document.getElementById('tradeSel').value;
+  const qty = parseInt(document.getElementById('qty').value, 10);
+  const p = latestPrice(id);
+  if (!p) return alert('该子弹还没有价格数据');
+  if (!qty || qty <= 0) return alert('数量要填正整数');
+  sim.feeRate = Number(document.getElementById('feeRate').value) || 0;
+  const rate = sim.feeRate / 100;
+  const h = acct.holdings[id] || (acct.holdings[id] = { qty: 0, cost: 0 });
+
+  if (side === 'buy') {
+    const fee = Math.round(qty * p * rate);
+    const total = qty * p + fee;
+    if (total > acct.balance) return alert('「' + acct.name + '」资金不足：需要 ' + total + '，可用 ' + acct.balance);
+    acct.balance -= total;
+    h.qty += qty;
+    h.cost += total;   // 成本按"实际花的钱"记账，自动含手续费
+    pushRecord(acct, '买入', id, qty, p, fee);
+  } else {
+    if (!h.qty || qty > h.qty) return alert('持仓不足：只有 ' + h.qty + ' 发');
+    const fee = Math.round(qty * p * rate);
+    const revenue = qty * p - fee;
+    const avgCost = h.cost / h.qty;
+    h.cost = Math.max(0, Math.round(h.cost - avgCost * qty));  // 四舍五入，避免小数误差累积
+    h.qty -= qty;
+    if (h.qty === 0) h.cost = 0;
+    acct.balance += revenue;
+    pushRecord(acct, '卖出', id, qty, p, fee);
+  }
+  snapshotEquity(acct);
+  saveSim();
+  renderSim();
+}
+
+function pushRecord(acct, side, id, qty, price, fee) {
+  acct.records.unshift({
+    t: new Date().toLocaleString('zh-CN'),
+    side, name: allData.bullets[String(id)].name,
+    qty, price, fee,
+  });
+  if (acct.records.length > 200) acct.records.pop();
+}
+
+function snapshotEquity(acct) {
+  // 记录一次"总资产"用于画资产曲线；同分钟内不重复记
+  const now = Date.now();
+  const last = acct.equity[acct.equity.length - 1];
+  if (last && now - last[0] < 60000) return;
+  acct.equity.push([now, calcEquity(acct)]);
+  if (acct.equity.length > 500) acct.equity.shift();
+}
+
+function calcEquity(acct) {
+  let total = acct.balance;
+  for (const [id, h] of Object.entries(acct.holdings)) {
+    if (!h.qty) continue;
+    const p = latestPrice(id);
+    if (p) total += h.qty * p;
+  }
+  return total;
+}
+
+function renderSim() {
+  const acct = getActive();
+  document.getElementById('feeRate').value = sim.feeRate;
+
+  // 账户选择器
+  const sel = document.getElementById('accountSel');
+  sel.innerHTML = '';
+  for (const a of sim.accounts) {
+    sel.insertAdjacentHTML('beforeend', '<option value="' + a.id + '">' + a.name + '</option>');
+  }
+  sel.value = String(acct.id);
+
+  // 当前账户的三个数字
+  const eq = calcEquity(acct);
+  document.getElementById('balance').textContent = acct.balance.toLocaleString();
+  document.getElementById('equity').textContent = eq.toLocaleString();
+  const pnl = eq - acct.initial;
+  const pnlEl = document.getElementById('pnl');
+  pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toLocaleString();
+  pnlEl.className = 'num ' + (pnl >= 0 ? 'pos' : 'neg');
+
+  // 账户总览表：一眼看谁赚谁亏
+  const ob = document.getElementById('overviewBody');
+  ob.innerHTML = '';
+  let sumInit = 0, sumEq = 0;
+  for (const a of sim.accounts) {
+    const e = calcEquity(a);
+    const p = e - a.initial;
+    const pct = a.initial ? (p / a.initial * 100).toFixed(1) : '0.0';
+    sumInit += a.initial; sumEq += e;
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + a.name + (a.id === sim.active ? '（当前）' : '') + '</td>' +
+      '<td>' + e.toLocaleString() + '</td>' +
+      '<td class="' + (p >= 0 ? 'pos' : 'neg') + '">' + (p >= 0 ? '+' : '') + p.toLocaleString() + '</td>' +
+      '<td class="' + (p >= 0 ? 'pos' : 'neg') + '">' + (p >= 0 ? '+' : '') + pct + '%</td>';
+    ob.appendChild(tr);
+  }
+  const totalPnl = sumEq - sumInit;
+  const trSum = document.createElement('tr');
+  trSum.innerHTML =
+    '<td><b>合计</b></td>' +
+    '<td>' + sumEq.toLocaleString() + '</td>' +
+    '<td class="' + (totalPnl >= 0 ? 'pos' : 'neg') + '"><b>' + (totalPnl >= 0 ? '+' : '') + totalPnl.toLocaleString() + '</b></td>' +
+    '<td class="' + (totalPnl >= 0 ? 'pos' : 'neg') + '">' + (sumInit ? (totalPnl / sumInit * 100).toFixed(1) : '0.0') + '%</td>';
+  ob.appendChild(trSum);
+
+  // 现价显示 + 今日高低/涨跌
+  const tid = document.getElementById('tradeSel').value;
+  const tp = latestPrice(tid);
+  document.getElementById('tradePrice').textContent = tp != null ? tp.toLocaleString() : '-';
+  const tb = allData.bullets[String(tid)] || {};
+  document.getElementById('dayHigh').textContent = tb.day_h != null ? tb.day_h.toLocaleString() : '-';
+  document.getElementById('dayLow').textContent = tb.day_m != null ? tb.day_m.toLocaleString() : '-';
+  const gainEl = document.getElementById('dayGain');
+  gainEl.textContent = tb.day != null ? (tb.day > 0 ? '+' : '') + tb.day + '%' : '-';
+  gainEl.className = tb.day >= 0 ? 'pos' : 'neg';
+
+  // 持仓表（当前账户）
+  const body = document.getElementById('holdingsBody');
+  body.innerHTML = '';
+  const rows = Object.entries(acct.holdings).filter(([, h]) => h.qty > 0);
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6d7480">暂无持仓</td></tr>';
+  }
+  for (const [id, h] of rows) {
+    const p = latestPrice(id);
+    const avg = Math.round(h.cost / h.qty);
+    const pnlNow = p != null ? (p - avg) * h.qty : 0;
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + allData.bullets[String(id)].name + '</td>' +
+      '<td>' + h.qty.toLocaleString() + '</td>' +
+      '<td>' + avg.toLocaleString() + '</td>' +
+      '<td>' + (p != null ? p.toLocaleString() : '-') + '</td>' +
+      '<td class="' + (pnlNow >= 0 ? 'pos' : 'neg') + '">' + (pnlNow >= 0 ? '+' : '') + pnlNow.toLocaleString() + '</td>';
+    body.appendChild(tr);
+  }
+
+  // 交易记录（当前账户）
+  const rec = document.getElementById('records');
+  rec.innerHTML = acct.records.length
+    ? acct.records.map(r => '<span class="' + (r.side === '买入' ? 'pos' : 'neg') + '">' +
+        r.t + ' ' + r.side + ' ' + r.name + ' ×' + r.qty.toLocaleString() +
+        ' @' + r.price.toLocaleString() + '（手续费 ' + r.fee.toLocaleString() + '）</span>').join('<br>')
+    : '暂无交易';
+
+  // 资产曲线（当前账户）
+  if (!equityChart) equityChart = echarts.init(document.getElementById('equityChart'));
+  if (acct.equity.length) {
+    equityChart.setOption({
+      animation: false,
+      grid: { left: 60, right: 12, top: 10, bottom: 20 },
+      xAxis: { type: 'time', axisLabel: { color: '#8a90a0', fontSize: 10 } },
+      yAxis: { scale: true, axisLabel: { color: '#8a90a0', fontSize: 10 }, splitLine: { lineStyle: { color: '#262a35' } } },
+      tooltip: { trigger: 'axis' },
+      series: [{ type: 'line', data: acct.equity, showSymbol: false, lineStyle: { color: '#4fd18a', width: 1.5 }, areaStyle: { color: 'rgba(79,209,138,0.08)' } }],
+    }, true);
+  } else {
+    equityChart.clear();
+  }
+}
+
+function resetSim() {
+  const acct = getActive();
+  if (!confirm('确定重置账户「' + acct.name + '」？资金回到初始的 ' + acct.initial.toLocaleString() + '，持仓和记录清空。')) return;
+  acct.balance = acct.initial;
+  acct.holdings = {};
+  acct.records = [];
+  acct.equity = [];
+  saveSim();
+  renderSim();
+}
+
+/* =========================================================
+   事件绑定与启动
+========================================================= */
+document.querySelectorAll('[data-range]').forEach(btn => {
+  btn.onclick = () => { rangeMs = Number(btn.dataset.range); renderAll(); };
+});
+document.getElementById('tradeSel').onchange = renderSim;
+document.getElementById('feeRate').onchange = () => { sim.feeRate = Number(document.getElementById('feeRate').value) || 0; saveSim(); };
+
+window.onresize = () => { if (chart) chart.resize(); if (equityChart) equityChart.resize(); };
+loadData();
+setInterval(() => { loadData(); snapshotEquity(getActive()); saveSim(); }, 300000);
+</script>
+</body>
+</html>
