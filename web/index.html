@@ -6,29 +6,33 @@
 <title>三角洲子弹行情 · 价格走势 + 模拟盘</title>
 <script src="echarts.min.js"></script>
 <style>
-  /* ===== 整体布局 ===== */
+  /* ===== 整体布局：撑满窗口，不留大片黑底 ===== */
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
   body {
     font-family: "Microsoft YaHei", sans-serif;
-    background: #14161c; color: #d8dce6; padding: 12px;
+    background: #14161c; color: #d8dce6; padding: 10px;
+    height: 100vh; overflow: hidden;   /* 页面本身不滚动 */
   }
-  .wrap { display: flex; gap: 12px; flex-wrap: wrap; }
+  .wrap { display: flex; gap: 10px; height: calc(100vh - 66px); }
   .card {
     background: #1c1f28; border: 1px solid #2a2e3a;
-    border-radius: 8px; padding: 12px;
+    border-radius: 8px; padding: 10px;
+    display: flex; flex-direction: column;
+    overflow: hidden; min-height: 0;
   }
-  .left  { flex: 2 1 600px; }
-  .right { flex: 1 1 360px; }
+  .left  { flex: 2 1 560px; }
+  .right { flex: 1 1 340px; overflow-y: auto; }   /* 内容太多时右侧自己滚动 */
 
-  h1 { font-size: 18px; margin-bottom: 8px; }
+  h1 { font-size: 17px; margin-bottom: 6px; }
   h1 small { font-size: 12px; color: #8a90a0; font-weight: normal; margin-left: 8px; }
-  h2 { font-size: 14px; margin: 10px 0 6px; color: #aeb4c2; }
+  h2 { font-size: 13px; margin: 7px 0 4px; color: #aeb4c2; }
 
   /* ===== 工具栏 ===== */
-  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .toolbar { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-bottom: 5px; }
   select, input, button {
     background: #262a35; color: #d8dce6; border: 1px solid #343947;
-    border-radius: 4px; padding: 5px 8px; font-size: 13px;
+    border-radius: 4px; padding: 4px 8px; font-size: 13px;
   }
   button { cursor: pointer; }
   button:hover { background: #303646; }
@@ -37,24 +41,24 @@
   button.buy:hover  { background: #28604a; }
   button.sell:hover { background: #603838; }
 
-  /* ===== 图表 ===== */
-  #chart { width: 100%; height: 480px; }
+  /* ===== 图表：占满左卡剩余空间 ===== */
+  #chart { width: 100%; flex: 1; min-height: 260px; }
 
   /* ===== 模拟盘 ===== */
-  .money { display: flex; gap: 16px; margin-bottom: 6px; }
-  .money div { flex: 1; background: #171a22; border-radius: 6px; padding: 8px 10px; }
+  .money { display: flex; gap: 10px; margin-bottom: 5px; }
+  .money div { flex: 1; background: #171a22; border-radius: 6px; padding: 7px 9px; }
   .money .label { font-size: 11px; color: #8a90a0; }
-  .money .num { font-size: 17px; font-weight: bold; margin-top: 2px; }
+  .money .num { font-size: 16px; font-weight: bold; margin-top: 2px; }
   .pos { color: #4fd18a; } .neg { color: #f26d6d; }
 
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { border-bottom: 1px solid #2a2e3a; padding: 4px 6px; text-align: right; }
+  th, td { border-bottom: 1px solid #2a2e3a; padding: 3px 6px; text-align: right; }
   th:first-child, td:first-child { text-align: left; }
   th { color: #8a90a0; font-weight: normal; }
 
-  .records { max-height: 150px; overflow-y: auto; font-size: 11px; line-height: 1.7; }
-  #equityChart { width: 100%; height: 160px; margin-top: 8px; }
-  .tip { font-size: 11px; color: #6d7480; margin-top: 6px; }
+  .records { max-height: 105px; overflow-y: auto; font-size: 11px; line-height: 1.6; }
+  #equityChart { width: 100%; flex: 1; min-height: 100px; margin-top: 6px; }
+  .tip { font-size: 11px; color: #6d7480; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -294,6 +298,7 @@ function renderChart() {
       { name: 'MA20', type: 'line', data: points.map((p, i) => [p[0], ma20[i]]), showSymbol: false, lineStyle: { width: 1, color: '#6fa8ff' } },
     ],
   }, true);
+  chart.resize();   // 容器尺寸变化后重算，保证填满窗口
 }
 
 /* =========================================================
@@ -525,6 +530,7 @@ function renderSim() {
       tooltip: { trigger: 'axis' },
       series: [{ type: 'line', data: acct.equity, showSymbol: false, lineStyle: { color: '#4fd18a', width: 1.5 }, areaStyle: { color: 'rgba(79,209,138,0.08)' } }],
     }, true);
+    equityChart.resize();
   } else {
     equityChart.clear();
   }
