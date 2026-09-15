@@ -81,7 +81,7 @@
       <button data-range="0">全部</button>
     </div>
     <div id="chart"></div>
-    <div class="tip">蓝色线 = 价格走势（每10分钟一个点）。线往上走 = 涨价，往下走 = 跌价。黄色/蓝色虚线是均价参考线（MA5 ≈ 近50分钟均价，MA20 ≈ 近3小时均价）。</div>
+    <div class="tip">浅蓝线 = 实际价格（每10分钟一个点，线往上=涨价，往下=跌价）。黄线 = 短均价（近50分钟平均），蓝线 = 长均价（近3小时平均）。鼠标移到图上能看每个时刻的详细说明。</div>
   </div>
 
   <!-- ================= 右：模拟盘 ================= -->
@@ -253,25 +253,51 @@ function renderChart() {
   const ma20 = ma(prices, 20);  // 每20个点（约3.3小时）的均价
   const zoomStart = points.length > 60 ? 60 : 0;   // 点多时默认看最近40%
   const cur = prices[prices.length - 1];
+  const lastMa5 = [...ma5].reverse().find(v => v != null);
+  const lastMa20 = [...ma20].reverse().find(v => v != null);
 
   chart.setOption({
     animation: false,
     title: {
       text: b.name + '（' + b.grade + '级）',
-      subtext: '当前价 ' + cur.toLocaleString() + ' 哈夫币 · 每10分钟一个点',
+      subtext: '当前价 ' + cur.toLocaleString() + ' 哈夫币' +
+        (lastMa5 != null ? ' · 短均价 ' + lastMa5.toLocaleString() : '') +
+        (lastMa20 != null ? ' · 长均价 ' + lastMa20.toLocaleString() : '') +
+        ' · 每10分钟一个点',
       left: 8, top: 4, textStyle: { color: '#d8dce6', fontSize: 14 },
       subtextStyle: { color: '#8a90a0', fontSize: 11 },
     },
     tooltip: {
       trigger: 'axis',
       formatter: function (params) {
-        const hit = params.find(p => p.seriesName === '价格' && p.data && p.data[1] != null);
+        const hit = params.find(x => x.seriesName === '价格' && x.data && x.data[1] != null);
         if (!hit) return '';
         const t = new Date(hit.data[0]).toLocaleString('zh-CN');
-        return t + '<br>价格：<b>' + hit.data[1].toLocaleString() + '</b> 哈夫币';
+        // 每根线一行，标清楚是什么
+        const rows = params.map(x => {
+          const v = x.data && x.data[1];
+          if (v == null) return '';
+          const label = x.seriesName === '价格' ? '价格（当时实际价格）'
+            : x.seriesName === '短均价' ? '短均价（近50分钟平均）'
+            : '长均价（近3小时平均）';
+          return '<div><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
+            x.color + ';margin-right:4px"></span><span style="color:#8a90a0">' + label + '：</span><b>' +
+            Number(v).toLocaleString() + '</b> 哈夫币</div>';
+        });
+        // 加一条"比长均价贵/便宜多少"，方便判断现在买划不划算
+        const m20 = params.find(x => x.seriesName === '长均价' && x.data && x.data[1] != null);
+        let cmp = '';
+        if (m20 && m20.data[1]) {
+          const diff = hit.data[1] - m20.data[1];
+          const pct = (diff / m20.data[1] * 100).toFixed(1);
+          const color = diff >= 0 ? '#4fd18a' : '#f26d6d';
+          cmp = '<div style="margin-top:3px;color:#8a90a0">价格比长均价<span style="color:' + color + ';font-weight:bold">' +
+            (diff >= 0 ? '高 ' : '低 ') + Math.abs(diff).toLocaleString() + '（' + (diff >= 0 ? '+' : '') + pct + '%）</span></div>';
+        }
+        return '<div>' + t + '</div>' + rows.join('') + cmp;
       },
     },
-    legend: { data: ['价格', 'MA5', 'MA20'], top: 4, right: 10, textStyle: { color: '#8a90a0' } },
+    legend: { data: ['价格', '短均价', '长均价'], top: 4, right: 10, textStyle: { color: '#8a90a0' } },
     grid: { left: 60, right: 16, top: 36, bottom: 60 },
     xAxis: {
       type: 'time',
@@ -294,8 +320,8 @@ function renderChart() {
         lineStyle: { width: 1.8, color: '#4fc3f7' },
         areaStyle: { color: 'rgba(79,195,247,0.06)' },
       },
-      { name: 'MA5', type: 'line', data: points.map((p, i) => [p[0], ma5[i]]), showSymbol: false, lineStyle: { width: 1, color: '#e8c35a' } },
-      { name: 'MA20', type: 'line', data: points.map((p, i) => [p[0], ma20[i]]), showSymbol: false, lineStyle: { width: 1, color: '#6fa8ff' } },
+      { name: '短均价', type: 'line', data: points.map((p, i) => [p[0], ma5[i]]), showSymbol: false, lineStyle: { width: 1, color: '#e8c35a' } },
+      { name: '长均价', type: 'line', data: points.map((p, i) => [p[0], ma20[i]]), showSymbol: false, lineStyle: { width: 1, color: '#6fa8ff' } },
     ],
   }, true);
   chart.resize();   // 容器尺寸变化后重算，保证填满窗口
