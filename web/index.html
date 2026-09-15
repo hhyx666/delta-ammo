@@ -140,6 +140,7 @@
    全局状态
 ========================================================= */
 const SIM_KEY = 'simState_v2';   // 多账户版
+const REMOTE_URL = 'https://raw.githubusercontent.com/hhyx666/delta-ammo/data/web/data.json';   // 云端数据（24小时采集）
 const START_BALANCE = 1000000;   // 初始虚拟资金 100万
 
 let allData = null;          // data.json 的内容
@@ -152,10 +153,24 @@ let sim = loadSim();         // 模拟盘状态
    数据加载
 ========================================================= */
 async function loadData() {
+  // 数据源：优先读云端（GitHub，24小时不间断采集），云端拿不到就用本地 data.json
+  const sources = [REMOTE_URL + '?r=' + Date.now(), 'data.json?' + Date.now()];
+  let text = null, from = '';
+  for (const url of sources) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      text = await resp.text();
+      from = url.indexOf('http') === 0 ? '云端' : '本地';
+      break;
+    } catch (e) { /* 这个源不行就试下一个 */ }
+  }
+  if (text === null) {
+    document.getElementById('updateInfo').textContent =
+      '云端和本地数据都读不到，请检查网络后刷新页面。';
+    return;
+  }
   try {
-    const resp = await fetch('data.json?' + Date.now()); // 加时间戳避免浏览器缓存
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const text = await resp.text();
     allData = JSON.parse(text);
     const t = new Date(allData.updated);
     // 统计：数据大小（按字符数估算）+ 历史记录总条数
@@ -163,14 +178,13 @@ async function loadData() {
     const sizeStr = kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' KB';
     const records = Object.values(allData.bullets).reduce((s, b) => s + b.history.length, 0);
     document.getElementById('updateInfo').textContent =
-      '数据更新于 ' + t.toLocaleString('zh-CN') + ' · 数据量 ≈ ' + sizeStr +
-      ' · 历史记录 ' + records.toLocaleString() + ' 条（每5分钟自动刷新）';
+      '数据更新于 ' + t.toLocaleString('zh-CN') + ' · 来源：' + from +
+      ' · 数据量 ≈ ' + sizeStr + ' · 历史记录 ' + records.toLocaleString() + ' 条（每5分钟自动刷新）';
     document.getElementById('sizeWarn').style.display = text.length > 30000000 ? 'block' : 'none';
     fillSelectors();
     renderAll();
   } catch (e) {
-    document.getElementById('updateInfo').textContent =
-      '读不到数据（' + e.message + '）。请先用"启动采集.bat"抓数据，再用"启动网页.bat"打开本页。';
+    document.getElementById('updateInfo').textContent = '数据解析失败（' + e.message + '）。';
   }
 }
 
