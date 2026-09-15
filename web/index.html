@@ -59,6 +59,16 @@
   .records { max-height: 105px; overflow-y: auto; font-size: 11px; line-height: 1.6; }
   #equityChart { width: 100%; flex: 1; min-height: 100px; margin-top: 6px; }
   .tip { font-size: 11px; color: #6d7480; margin-top: 4px; }
+
+  /* ===== 自制弹窗（Electron 里浏览器自带弹窗被禁用，自己做一个） ===== */
+  .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modal-box { background: #1c1f28; border: 1px solid #343947; border-radius: 8px; padding: 14px 16px; width: 320px; max-width: 90vw; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+  .modal-box h3 { font-size: 14px; margin-bottom: 8px; }
+  .modal-box .m-msg { font-size: 12px; color: #aeb4c2; margin-bottom: 10px; white-space: pre-wrap; }
+  .modal-box .m-field { margin-bottom: 8px; }
+  .modal-box .m-field label { display: block; font-size: 11px; color: #8a90a0; margin-bottom: 3px; }
+  .modal-box .m-field input { width: 100%; }
+  .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -136,6 +146,19 @@
 
     <div id="equityChart"></div>
     <div class="tip">总资产 = 可用资金 + 持仓按现价折算。模拟盘数据存在浏览器里，换浏览器会丢；真实交易请在游戏里手动操作。</div>
+  </div>
+</div>
+
+<!-- 自制弹窗（新建账户、确认删除、提示等都用它） -->
+<div class="modal-mask" id="modalMask">
+  <div class="modal-box">
+    <h3 id="modalTitle"></h3>
+    <div class="m-msg" id="modalMsg"></div>
+    <div id="modalFields"></div>
+    <div class="modal-btns">
+      <button id="modalCancel">取消</button>
+      <button id="modalOk">确定</button>
+    </div>
   </div>
 </div>
 
@@ -373,22 +396,78 @@ function switchAccount(id) {
   renderSim();
 }
 
-function addAccount() {
-  const name = prompt('给新账户起个名字（比如：小号A）', '账户' + sim.nextId);
-  if (!name) return;
-  const capStr = prompt('这个账户的初始虚拟资金（哈夫币，可以随便定，默认100万）', String(START_BALANCE));
-  const cap = parseInt(capStr, 10);
-  if (!cap || cap <= 0) return alert('初始资金要填正整数');
+/* ===== 自制弹窗 =====
+   Electron 软件里浏览器自带的 prompt / alert / confirm 都被禁用了（点了没反应），
+   所以自己做一个页内弹窗，浏览器和软件里都能用。 */
+function closeModal() { document.getElementById('modalMask').style.display = 'none'; }
+
+function showMsg(msg) {
+  // 提示框：一个"确定"按钮
+  document.getElementById('modalTitle').textContent = '提示';
+  document.getElementById('modalMsg').textContent = msg;
+  document.getElementById('modalFields').innerHTML = '';
+  document.getElementById('modalCancel').style.display = 'none';
+  document.getElementById('modalOk').onclick = closeModal;
+  document.getElementById('modalMask').style.display = 'flex';
+}
+
+function askConfirm(msg) {
+  // 确认框：确定返回 true，取消返回 false
+  return new Promise(res => {
+    document.getElementById('modalTitle').textContent = '请确认';
+    document.getElementById('modalMsg').textContent = msg;
+    document.getElementById('modalFields').innerHTML = '';
+    document.getElementById('modalCancel').style.display = '';
+    document.getElementById('modalCancel').onclick = () => { closeModal(); res(false); };
+    document.getElementById('modalOk').onclick = () => { closeModal(); res(true); };
+    document.getElementById('modalMask').style.display = 'flex';
+  });
+}
+
+function askForm(title, fields) {
+  // 输入框：fields 每项 = {label, type, value}；确定返回填好的值数组，取消返回 null
+  return new Promise(res => {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalMsg').textContent = '';
+    const box = document.getElementById('modalFields');
+    box.innerHTML = '';
+    const inputs = [];
+    for (const f of fields) {
+      box.insertAdjacentHTML('beforeend',
+        '<div class="m-field"><label>' + f.label + '</label><input type="' + (f.type || 'text') + '"></div>');
+      const inp = box.lastElementChild.querySelector('input');
+      inp.value = f.value || '';
+      inputs.push(inp);
+    }
+    document.getElementById('modalCancel').style.display = '';
+    document.getElementById('modalCancel').onclick = () => { closeModal(); res(null); };
+    document.getElementById('modalOk').onclick = () => { closeModal(); res(inputs.map(i => i.value)); };
+    document.getElementById('modalMask').style.display = 'flex';
+    inputs[0].focus();
+  });
+}
+
+async function addAccount() {
+  const vals = await askForm('新建账户', [
+    { label: '账户名字（比如：小号A）', value: '账户' + sim.nextId },
+    { label: '初始虚拟资金（哈夫币，随便定）', type: 'number', value: String(START_BALANCE) },
+  ]);
+  if (!vals) return;
+  const name = vals[0].trim();
+  const cap = parseInt(vals[1], 10);
+  if (!name) return showMsg('账户名字不能为空');
+  if (!cap || cap <= 0) return showMsg('初始资金要填正整数');
   sim.accounts.push({ id: sim.nextId++, name: name, initial: cap, balance: cap, holdings: {}, records: [], equity: [] });
   sim.active = sim.accounts[sim.accounts.length - 1].id;
   saveSim();
   renderSim();
 }
 
-function deleteAccount() {
-  if (sim.accounts.length <= 1) return alert('至少保留一个账户');
+async function deleteAccount() {
+  if (sim.accounts.length <= 1) return showMsg('至少保留一个账户');
   const acct = getActive();
-  if (!confirm('确定删除账户「' + acct.name + '」？它的持仓和记录都会清掉。')) return;
+  const ok = await askConfirm('确定删除账户「' + acct.name + '」？它的持仓和记录都会清掉。');
+  if (!ok) return;
   sim.accounts = sim.accounts.filter(a => a.id !== acct.id);
   sim.active = sim.accounts[0].id;
   saveSim();
@@ -400,8 +479,8 @@ function doTrade(side) {
   const id = document.getElementById('tradeSel').value;
   const qty = parseInt(document.getElementById('qty').value, 10);
   const p = latestPrice(id);
-  if (!p) return alert('该子弹还没有价格数据');
-  if (!qty || qty <= 0) return alert('数量要填正整数');
+  if (!p) return showMsg('该子弹还没有价格数据');
+  if (!qty || qty <= 0) return showMsg('数量要填正整数');
   sim.feeRate = Number(document.getElementById('feeRate').value) || 0;
   const rate = sim.feeRate / 100;
   const h = acct.holdings[id] || (acct.holdings[id] = { qty: 0, cost: 0 });
@@ -409,13 +488,13 @@ function doTrade(side) {
   if (side === 'buy') {
     const fee = Math.round(qty * p * rate);
     const total = qty * p + fee;
-    if (total > acct.balance) return alert('「' + acct.name + '」资金不足：需要 ' + total + '，可用 ' + acct.balance);
+    if (total > acct.balance) return showMsg('「' + acct.name + '」资金不足：需要 ' + total + '，可用 ' + acct.balance);
     acct.balance -= total;
     h.qty += qty;
     h.cost += total;   // 成本按"实际花的钱"记账，自动含手续费
     pushRecord(acct, '买入', id, qty, p, fee);
   } else {
-    if (!h.qty || qty > h.qty) return alert('持仓不足：只有 ' + h.qty + ' 发');
+    if (!h.qty || qty > h.qty) return showMsg('持仓不足：只有 ' + h.qty + ' 发');
     const fee = Math.round(qty * p * rate);
     const revenue = qty * p - fee;
     const avgCost = h.cost / h.qty;
@@ -562,9 +641,10 @@ function renderSim() {
   }
 }
 
-function resetSim() {
+async function resetSim() {
   const acct = getActive();
-  if (!confirm('确定重置账户「' + acct.name + '」？资金回到初始的 ' + acct.initial.toLocaleString() + '，持仓和记录清空。')) return;
+  const ok = await askConfirm('确定重置账户「' + acct.name + '」？资金回到初始的 ' + acct.initial.toLocaleString() + '，持仓和记录清空。');
+  if (!ok) return;
   acct.balance = acct.initial;
   acct.holdings = {};
   acct.records = [];
