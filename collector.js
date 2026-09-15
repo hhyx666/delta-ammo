@@ -109,6 +109,20 @@ async function collectOnce() {
       entry.day_m = Number(it.day_m);   // 今日最低价
       entry.day = Number(it.day);       // 今日涨跌幅(%)
       entry.lastTime = it.time;         // 网站数据的最后更新时间
+
+      // 自动补点：网站知道今日最高/最低发生在几点几分，
+      // 用这两个真实点位补上没采集到的时段（比如夜里关机那段时间）
+      const tsOf = s => {
+        const t = new Date(String(s).replace(' ', 'T'));
+        return isNaN(t.getTime()) ? 0 : t.getTime();
+      };
+      for (const [t0, p0] of [[tsOf(it.h_time), Number(it.day_h)], [tsOf(it.m_time), Number(it.day_m)]]) {
+        if (!t0 || !p0 || isNaN(p0)) continue;
+        if (!entry.history.some(h => Math.abs(h[0] - t0) < 60000)) {
+          entry.history.push([t0, p0]);
+        }
+      }
+      entry.history.sort((a, b) => a[0] - b[0]);
     }
     const tmp = DATA_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(data));
