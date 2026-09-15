@@ -1,0 +1,30 @@
+name: collect
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # 每10分钟抓一次（GitHub 免费计划，可能有几分钟延迟）
+  workflow_dispatch: {}       # 也允许手动触发
+permissions:
+  contents: write
+env:
+  TZ: Asia/Shanghai          # 时区要和游戏服务器一致，时间戳才不会错
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    concurrency: collect
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: data           # 数据存在 data 分支
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 抓一次数据
+        run: node collector.js once
+      - name: 提交数据
+        run: |
+          git config user.name "data-bot"
+          git config user.email "bot@local"
+          git add web/data.json
+          if git diff --cached --quiet; then echo "价格无变化，跳过提交"; exit 0; fi
+          git commit --amend -m "auto data $(date '+%F %T')" --allow-empty
+          git push -f origin data
