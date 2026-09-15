@@ -18,7 +18,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
+// 浏览器选择：Windows 用 Edge；Linux（GitHub 服务器）用 Chrome
+const IS_WIN = process.platform === 'win32';
+const BROWSER = IS_WIN
+  ? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
+  : 'google-chrome';
+const BROWSER_EXTRA = IS_WIN ? [] : ['--no-sandbox', '--disable-dev-shm-usage'];
 const PORT = 9233;
 const INTERVAL = 600 * 1000;                       // 抓取间隔 10 分钟
 const DATA_FILE = path.join(__dirname, 'web', 'data.json');
@@ -40,7 +45,8 @@ async function waitEdgeReady(port, timeoutMs) {
 async function collectOnce() {
   // 每次用全新的浏览器配置，保证网站一定重新拉最新数据
   try { fs.rmSync(PROFILE, { recursive: true, force: true }); } catch (e) { /* 删不掉就算了 */ }
-  const edge = spawn(EDGE, [
+  const edge = spawn(BROWSER, [
+    ...BROWSER_EXTRA,
     '--headless=new', '--disable-gpu', `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${PROFILE}`, '--no-first-run', '--no-default-browser-check',
     '--window-size=1400,900', 'about:blank'
