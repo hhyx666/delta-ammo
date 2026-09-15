@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>三角洲子弹行情 · K线 + 模拟盘</title>
+<title>三角洲子弹行情 · 价格走势 + 模拟盘</title>
 <script src="echarts.min.js"></script>
 <style>
   /* ===== 整体布局 ===== */
@@ -71,20 +71,13 @@
     <div class="toolbar">
       <span>子弹：</span>
       <select id="bulletSel"></select>
-      <span>K线周期：</span>
-      <select id="periodSel">
-        <option value="600000" selected>10分钟</option>
-        <option value="1800000">30分钟</option>
-        <option value="3600000">1小时</option>
-        <option value="86400000">1天</option>
-      </select>
       <span>时间范围：</span>
       <button data-range="86400000">24小时</button>
       <button data-range="604800000">7天</button>
       <button data-range="0">全部</button>
     </div>
     <div id="chart"></div>
-    <div class="tip">K线由采集器抓到的真实价格自动合成（开盘=时段第一个价，收盘=最后一个，最高/最低=时段内极值）。绿涨红跌（国内习惯）。</div>
+    <div class="tip">蓝色线 = 价格走势（每10分钟一个点）。线往上走 = 涨价，往下走 = 跌价。黄色/蓝色虚线是均价参考线（MA5 ≈ 近50分钟均价，MA20 ≈ 近3小时均价）。</div>
   </div>
 
   <!-- ================= 右：模拟盘 ================= -->
@@ -191,29 +184,6 @@ function fillSelectors() {
   sel.onchange = () => renderAll();
 }
 
-/* =========================================================
-   K线：把原始采样点聚合成蜡烛
-========================================================= */
-function buildCandles(history, periodMs) {
-  // history: [[时间戳毫秒, 价格], ...]；返回 ECharts 蜡烛数据 [时间, 开, 收, 低, 高]
-  const candles = [];
-  let cur = null;
-  for (const [t, p] of history) {
-    if (rangeMs && t < Date.now() - rangeMs) continue;
-    const bucket = Math.floor(t / periodMs) * periodMs;
-    if (!cur || cur.bucket !== bucket) {
-      if (cur) candles.push([cur.t, cur.o, cur.c, cur.l, cur.h]);
-      cur = { bucket, t: bucket, o: p, c: p, l: p, h: p };
-    } else {
-      cur.c = p;
-      if (p < cur.l) cur.l = p;
-      if (p > cur.h) cur.h = p;
-    }
-  }
-  if (cur) candles.push([cur.t, cur.o, cur.c, cur.l, cur.h]);
-  return candles;
-}
-
 function ma(closes, n) {
   // 收盘价移动平均线（MA5 / MA20），不够 n 根时返回 null
   const out = [];
@@ -224,14 +194,6 @@ function ma(closes, n) {
     out.push(i >= n - 1 ? Math.round(sum / n) : null);
   }
   return out;
-}
-
-function fmtTime(t, periodMs) {
-  const d = new Date(t);
-  const p = s => String(s).padStart(2, '0');
-  if (periodMs >= 86400000) return p(d.getMonth() + 1) + '-' + p(d.getDate());
-  if (rangeMs > 604800000) return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
-  return p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
 /* =========================================================
@@ -245,7 +207,6 @@ function renderAll() {
 function renderChart() {
   const id = document.getElementById('bulletSel').value;
   const b = allData.bullets[id];
-  const periodMs = Number(document.getElementById('periodSel').value);
   if (!chart) chart = echarts.init(document.getElementById('chart'));
 
   if (!b || !b.history.length) {
@@ -253,27 +214,37 @@ function renderChart() {
     return;
   }
 
-  const candles = buildCandles(b.history, periodMs);
-  const closes = candles.map(c => c[2]);   // 收盘价数组
-  const ma5 = ma(closes, 5);
-  const ma20 = ma(closes, 20);
-  // 蜡烛少的时候（数据刚起步）显示全部；蜡烛多了才默认展示最近一部分
-  const zoomStart = candles.length > 30 ? 60 : 0;
+  // 折线数据：所选时间范围内的所有采样点 [时间, 价格]
+  const points = b.history
+    .filter(h => !rangeMs || h[0] >= Date.now() - rangeMs)
+    .map(h => [h[0], h[1]]);
+  const prices = points.map(p => p[1]);
+  const ma5 = ma(prices, 5);    // 每5个点（约50分钟）的均价
+  const ma20 = ma(prices, 20);  // 每20个点（约3.3小时）的均价
+  const zoomStart = points.length > 60 ? 60 : 0;   // 点多时默认看最近40%
+  const cur = prices[prices.length - 1];
 
   chart.setOption({
     animation: false,
     title: {
       text: b.name + '（' + b.grade + '级）',
-      subtext: candles.length < 3 ? '数据刚起步（' + candles.length + ' 根蜡烛），挂机采集几小时后K线就成型了' : '',
+      subtext: '当前价 ' + cur.toLocaleString() + ' 哈夫币 · 每10分钟一个点',
       left: 8, top: 4, textStyle: { color: '#d8dce6', fontSize: 14 },
       subtextStyle: { color: '#8a90a0', fontSize: 11 },
     },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    legend: { data: ['K线', 'MA5', 'MA20'], top: 4, right: 10, textStyle: { color: '#8a90a0' } },
+    tooltip: {
+      trigger: 'axis',
+      formatter: function (params) {
+        const hit = params.find(p => p.seriesName === '价格' && p.data && p.data[1] != null);
+        if (!hit) return '';
+        const t = new Date(hit.data[0]).toLocaleString('zh-CN');
+        return t + '<br>价格：<b>' + hit.data[1].toLocaleString() + '</b> 哈夫币';
+      },
+    },
+    legend: { data: ['价格', 'MA5', 'MA20'], top: 4, right: 10, textStyle: { color: '#8a90a0' } },
     grid: { left: 60, right: 16, top: 36, bottom: 60 },
     xAxis: {
-      type: 'category',
-      data: candles.map(c => fmtTime(c[0], periodMs)),
+      type: 'time',
       axisLine: { lineStyle: { color: '#343947' } },
       axisLabel: { color: '#8a90a0' },
     },
@@ -288,12 +259,13 @@ function renderChart() {
     ],
     series: [
       {
-        name: 'K线', type: 'candlestick',
-        data: candles,
-        itemStyle: { color: '#4fd18a', color0: '#f26d6d', borderColor: '#4fd18a', borderColor0: '#f26d6d' },
+        name: '价格', type: 'line', data: points,
+        showSymbol: false,
+        lineStyle: { width: 1.8, color: '#4fc3f7' },
+        areaStyle: { color: 'rgba(79,195,247,0.06)' },
       },
-      { name: 'MA5', type: 'line', data: ma5, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#e8c35a' } },
-      { name: 'MA20', type: 'line', data: ma20, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#6fa8ff' } },
+      { name: 'MA5', type: 'line', data: points.map((p, i) => [p[0], ma5[i]]), showSymbol: false, lineStyle: { width: 1, color: '#e8c35a' } },
+      { name: 'MA20', type: 'line', data: points.map((p, i) => [p[0], ma20[i]]), showSymbol: false, lineStyle: { width: 1, color: '#6fa8ff' } },
     ],
   }, true);
 }
@@ -449,7 +421,6 @@ function resetSim() {
 /* =========================================================
    事件绑定与启动
 ========================================================= */
-document.getElementById('periodSel').onchange = renderAll;
 document.querySelectorAll('[data-range]').forEach(btn => {
   btn.onclick = () => { rangeMs = Number(btn.dataset.range); renderAll(); };
 });
